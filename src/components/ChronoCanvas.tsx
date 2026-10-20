@@ -260,7 +260,8 @@ export const ChronoCanvas: React.FC<ChronoCanvasProps> = ({
       const isBlindMasked =
         state.shellState === 'playing' &&
         ((state.timerPhase === 'running' && state.hideDigitsInRun) ||
-          (state.mode === 'buio' && state.timerPhase === 'stopped_awaiting_input'));
+          ((state.mode === 'buio' || state.mode === 'giornaliera') &&
+            state.timerPhase === 'stopped_awaiting_input'));
 
       // Outer ambient precision ring
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';

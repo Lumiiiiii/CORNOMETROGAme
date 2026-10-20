@@ -1,10 +1,15 @@
-export type GameMode = 'classica' | 'sfida' | 'buio';
+export type GameMode = 'classica' | 'sfida' | 'buio' | 'giornaliera';
 
 export type ShellState = 'title' | 'playing' | 'paused' | 'gameover';
 
 export type TimerPhase = 'idle' | 'running' | 'stopped_awaiting_input' | 'revealed';
 
 export type AccuracyGrade = 'PERFETTO' | 'CECCHINO' | 'OTTIMO' | 'BUONO' | 'FUORI_TEMPO';
+
+export const DAILY_ROUNDS_TOTAL = 5;
+export const DAILY_MIN_ROUND_SCORE = 1;
+export const DAILY_MAX_ROUND_SCORE = 5000;
+export const DAILY_MAX_TOTAL_SCORE = DAILY_ROUNDS_TOTAL * DAILY_MAX_ROUND_SCORE;
 
 export interface EvaluationResult {
   actualMs: number;
@@ -59,6 +64,7 @@ export interface SessionSummary {
   roundsPlayed: number;
   totalPoints: number;
   bestErrorMs: number | null;
+  avgErrorMs: number | null;
   avgAccuracyPercent: number;
   perfectCount: number;
   rankTitle: string;
@@ -109,13 +115,44 @@ export const MODE_INFO: Record<
       'Il timer è invisibile durante il conteggio. Premi AVVIA, poi STOP, scrivi quanti secondi pensi siano passati e sblocca il risultato reale!',
     accentHex: '#38BDF8',
   },
+  giornaliera: {
+    id: 'giornaliera',
+    title: 'Sfida Giornaliera Cieca',
+    shortTitle: 'Giornaliera',
+    kicker: '5 Round al Buio · Da 1 a 5000 PT a round',
+    description:
+      'Ogni giorno hai 5 tentativi in modalità cieca: avvia e ferma il timer al buio, indovina quanto tempo è passato e ottieni da 1 a 5.000 punti per round (fino a 25.000 PT)!',
+    howToPlay:
+      'Completa i 5 round giornalieri al buio. Più la tua stima è vicina al tempo reale, più ti avvicini ai 5.000 punti per round.',
+    accentHex: '#A855F7',
+  },
 };
 
 export function isTimerHiddenDuringRun(mode: GameMode, hideInClassicOrChallenge = false): boolean {
-  if (mode === 'buio') {
+  if (mode === 'buio' || mode === 'giornaliera') {
     return true;
   }
   return hideInClassicOrChallenge;
+}
+
+export function getTodayDateKey(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Calculates a score strictly between 1 and 5000 based on absolute millisecond error.
+ * 0-15ms error awards the full 5000 points; larger errors decay smoothly down to a minimum of 1 point.
+ */
+export function calculateDailyRoundScore(absErrorMs: number): number {
+  const safeError = Math.max(0, Math.round(absErrorMs));
+  if (safeError <= 15) {
+    return DAILY_MAX_ROUND_SCORE;
+  }
+  const raw = Math.round(DAILY_MAX_ROUND_SCORE * Math.exp(-(safeError - 15) / 1150));
+  return Math.max(DAILY_MIN_ROUND_SCORE, Math.min(DAILY_MAX_ROUND_SCORE, raw));
 }
 
 export function splitTimerParts(ms: number): {
@@ -169,7 +206,8 @@ export function parseSecondsInput(raw: string | number): number | null {
 export function evaluateAttempt(
   actualMs: number,
   referenceMs: number,
-  currentStreak = 0
+  currentStreak = 0,
+  isDailyMode = false
 ): EvaluationResult {
   const safeActual = Math.max(0, Math.round(actualMs));
   const safeRef = Math.max(100, Math.round(referenceMs));
@@ -220,6 +258,24 @@ export function evaluateAttempt(
   }
 
   const nextStreak = keepsStreak ? currentStreak + 1 : 0;
+
+  if (isDailyMode) {
+    const dailyScore = calculateDailyRoundScore(absErrorMs);
+    return {
+      actualMs: safeActual,
+      referenceMs: safeRef,
+      signedDeltaMs,
+      absErrorMs,
+      accuracyPercent,
+      grade,
+      gradeLabel,
+      gradeSubtitle,
+      basePoints: dailyScore,
+      totalPoints: dailyScore,
+      nextStreak,
+    };
+  }
+
   const streakBonus = keepsStreak ? Math.min(currentStreak, 5) * 100 : 0;
   const totalPoints = basePoints + streakBonus;
 
@@ -283,6 +339,7 @@ export function computeSessionSummary(rounds: RoundRecord[]): SessionSummary {
       roundsPlayed: 0,
       totalPoints: 0,
       bestErrorMs: null,
+      avgErrorMs: null,
       avgAccuracyPercent: 0,
       perfectCount: 0,
       rankTitle: 'Apprendista del Tempo',
@@ -291,6 +348,8 @@ export function computeSessionSummary(rounds: RoundRecord[]): SessionSummary {
 
   const totalPoints = rounds.reduce((acc, r) => acc + r.points, 0);
   const bestErrorMs = Math.min(...rounds.map((r) => r.absErrorMs));
+  const sumErrorMs = rounds.reduce((acc, r) => acc + r.absErrorMs, 0);
+  const avgErrorMs = Math.round(sumErrorMs / rounds.length);
   const sumAccuracy = rounds.reduce((acc, r) => acc + r.accuracyPercent, 0);
   const avgAccuracyPercent = Math.round((sumAccuracy / rounds.length) * 10) / 10;
   const perfectCount = rounds.filter(
@@ -310,6 +369,7 @@ export function computeSessionSummary(rounds: RoundRecord[]): SessionSummary {
     roundsPlayed: rounds.length,
     totalPoints,
     bestErrorMs,
+    avgErrorMs,
     avgAccuracyPercent,
     perfectCount,
     rankTitle,

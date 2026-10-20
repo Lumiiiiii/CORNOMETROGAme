@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  DAILY_MAX_ROUND_SCORE,
+  DAILY_MAX_TOTAL_SCORE,
+  DAILY_ROUNDS_TOTAL,
   EvaluationResult,
   FriendGuessInput,
   GameMode,
@@ -13,13 +16,14 @@ import {
   evaluateClassicGuesses,
   formatSeconds,
   formatSignedDelta,
+  getTodayDateKey,
   isTimerHiddenDuringRun,
   parseSecondsInput,
   splitTimerParts,
 } from './game/rules';
 import { soundEngine } from './game/sound';
 import { CanvasBridgeState, ChronoCanvas } from './components/ChronoCanvas';
-import { ModeIconSvg, PauseIconSvg, ResetIconSvg, SoundIconSvg } from './components/GameSvgAssets';
+import { ModeIconSvg, PauseIconSvg, SoundIconSvg } from './components/GameSvgAssets';
 import { TitleScreen } from './components/TitleScreen';
 import { GameOverModal, PauseModal } from './components/GameModals';
 import { AppLogo } from './components/AppLogo';
@@ -43,6 +47,8 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get('autostart') === '1';
   }, []);
+
+  const todayKey = useMemo(() => getTodayDateKey(), []);
 
   const [shellState, setShellState] = useState<ShellState>(
     initialAutostart ? 'playing' : 'title'
@@ -70,6 +76,14 @@ export default function App() {
   const [lastRankedFriends, setLastRankedFriends] = useState<RankedFriendGuess[]>([]);
   const [rounds, setRounds] = useState<RoundRecord[]>([]);
   const [streak, setStreak] = useState<number>(0);
+  const [dailyBestScore, setDailyBestScore] = useState<number | null>(() => {
+    try {
+      const saved = window.localStorage.getItem(`cronosfida_daily_best_${todayKey}`);
+      return saved ? Number(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   // Refs for 60Hz canvas decoupling
   const startTimePerfRef = useRef<number>(0);
@@ -128,25 +142,32 @@ export default function App() {
 
   const handleSelectMode = useCallback(
     (nextMode: GameMode) => {
+      if (nextMode !== mode && (nextMode === 'giornaliera' || mode === 'giornaliera')) {
+        setRounds([]);
+        setStreak(0);
+      }
       setMode(nextMode);
       resetCurrentRound();
       soundEngine.playTick(1.15);
     },
-    [resetCurrentRound]
+    [mode, resetCurrentRound]
   );
 
   const handleStartGameFromTitle = useCallback(
     (chosenMode?: GameMode) => {
-      if (chosenMode) {
-        setMode(chosenMode);
-        bridgeRef.current.mode = chosenMode;
+      const targetMode = chosenMode || mode;
+      if (targetMode !== mode || targetMode === 'giornaliera') {
+        setRounds([]);
+        setStreak(0);
       }
+      setMode(targetMode);
+      bridgeRef.current.mode = targetMode;
       document.body.dataset.state = 'playing';
       bridgeRef.current.shellState = 'playing';
       setShellState('playing');
       resetCurrentRound();
       soundEngine.playStartClick();
-      triggerCanvasBurst(MODE_INFO[chosenMode || mode].accentHex, false);
+      triggerCanvasBurst(MODE_INFO[targetMode].accentHex, false);
     },
     [mode, resetCurrentRound, triggerCanvasBurst]
   );
@@ -186,24 +207,44 @@ export default function App() {
       soundEngine.playGradeFanfare(ev.grade);
       triggerCanvasBurst(gradeColor, ev.grade === 'PERFETTO' || ev.grade === 'CECCHINO');
 
-      setRounds((prev) => [
-        {
-          id: `r-${Date.now()}-${prev.length + 1}`,
-          roundNumber: prev.length + 1,
-          mode,
-          actualMs: ev.actualMs,
-          referenceMs: ev.referenceMs,
-          absErrorMs: ev.absErrorMs,
-          accuracyPercent: ev.accuracyPercent,
-          grade: ev.grade,
-          gradeLabel: ev.gradeLabel,
-          points: ev.totalPoints,
-          winnerName,
-        },
-        ...prev,
-      ]);
+      setRounds((prev) => {
+        const nextRounds: RoundRecord[] = [
+          {
+            id: `r-${Date.now()}-${prev.length + 1}`,
+            roundNumber: prev.length + 1,
+            mode,
+            actualMs: ev.actualMs,
+            referenceMs: ev.referenceMs,
+            absErrorMs: ev.absErrorMs,
+            accuracyPercent: ev.accuracyPercent,
+            grade: ev.grade,
+            gradeLabel: ev.gradeLabel,
+            points: ev.totalPoints,
+            winnerName,
+          },
+          ...prev,
+        ];
+
+        if (mode === 'giornaliera') {
+          const totalDailyPts = nextRounds.reduce((acc, r) => acc + r.points, 0);
+          setDailyBestScore((prevBest) => {
+            const updatedBest = prevBest === null ? totalDailyPts : Math.max(prevBest, totalDailyPts);
+            try {
+              window.localStorage.setItem(
+                `cronosfida_daily_best_${todayKey}`,
+                String(updatedBest)
+              );
+            } catch {
+              // Ignore storage quota errors
+            }
+            return updatedBest;
+          });
+        }
+
+        return nextRounds;
+      });
     },
-    [mode, triggerCanvasBurst]
+    [mode, todayKey, triggerCanvasBurst]
   );
 
   const handleStopChrono = useCallback(() => {
@@ -216,10 +257,10 @@ export default function App() {
     if (mode === 'sfida') {
       // In Modalità Sfida, stopping immediately compares elapsed time against targetSeconds
       const targetMs = Math.round(targetSeconds * 1000);
-      const ev = evaluateAttempt(elapsedMs, targetMs, streak);
+      const ev = evaluateAttempt(elapsedMs, targetMs, streak, false);
       finalizeRoundRecord(ev);
     } else {
-      // In Modalità Classica and Modalità Al Buio, transition to input/reveal stage
+      // In Modalità Classica, Al Buio, and Giornaliera, transition to input/reveal stage
       setTimerPhase('stopped_awaiting_input');
       bridgeRef.current.timerPhase = 'stopped_awaiting_input';
       triggerCanvasBurst(MODE_INFO[mode].accentHex, true);
@@ -228,8 +269,9 @@ export default function App() {
 
   const handleRevealBlindGuess = useCallback(
     (skipEstimate = false) => {
-      if (skipEstimate) {
-        const ev = evaluateAttempt(stoppedElapsedMs, stoppedElapsedMs, streak);
+      const isDaily = mode === 'giornaliera';
+      if (skipEstimate && !isDaily) {
+        const ev = evaluateAttempt(stoppedElapsedMs, stoppedElapsedMs, streak, false);
         finalizeRoundRecord(ev);
         return;
       }
@@ -240,17 +282,16 @@ export default function App() {
       }
       setBlindInputError(null);
       const guessMs = Math.round(parsedSec * 1000);
-      const ev = evaluateAttempt(stoppedElapsedMs, guessMs, streak);
+      const ev = evaluateAttempt(stoppedElapsedMs, guessMs, streak, isDaily);
       finalizeRoundRecord(ev);
     },
-    [blindGuessInput, finalizeRoundRecord, stoppedElapsedMs, streak]
+    [blindGuessInput, finalizeRoundRecord, mode, stoppedElapsedMs, streak]
   );
 
   const handleRevealClassicGuesses = useCallback(
     (oralQuickReveal = false) => {
       if (oralQuickReveal) {
-        // Host & friends played orally around the table: reveal exact time & record round
-        const ev = evaluateAttempt(stoppedElapsedMs, stoppedElapsedMs, streak);
+        const ev = evaluateAttempt(stoppedElapsedMs, stoppedElapsedMs, streak, false);
         setLastRankedFriends([]);
         finalizeRoundRecord(ev, 'Sfida a Voce');
         return;
@@ -275,7 +316,12 @@ export default function App() {
       setLastRankedFriends(ranked);
 
       const best = ranked[0];
-      const ev = evaluateAttempt(stoppedElapsedMs, best ? best.guessMs : stoppedElapsedMs, streak);
+      const ev = evaluateAttempt(
+        stoppedElapsedMs,
+        best ? best.guessMs : stoppedElapsedMs,
+        streak,
+        false
+      );
       finalizeRoundRecord(ev, best?.playerName);
     },
     [classicFriends, finalizeRoundRecord, stoppedElapsedMs, streak]
@@ -290,7 +336,15 @@ export default function App() {
     soundEngine.playStartClick();
   }, [resetCurrentRound]);
 
-  // Global keyboard shortcuts (Title Enter/Space handshake, Playing Space Avvia/Stop, 1/2/3 Modes, P Pause, M Mute, R Reset)
+  const handleNextRoundOrFinishDaily = useCallback(() => {
+    if (mode === 'giornaliera' && rounds.length >= DAILY_ROUNDS_TOTAL) {
+      setShellState('gameover');
+    } else {
+      resetCurrentRound();
+    }
+  }, [mode, resetCurrentRound, rounds.length]);
+
+  // Global keyboard shortcuts (Title Enter/Space handshake, Playing Space Avvia/Stop, 1/2/3/4 Modes, P Pause, M Mute, R Reset)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -342,6 +396,9 @@ export default function App() {
       } else if (e.key === '3' && timerPhase !== 'running') {
         e.preventDefault();
         handleSelectMode('buio');
+      } else if (e.key === '4' && timerPhase !== 'running') {
+        e.preventDefault();
+        handleSelectMode('giornaliera');
       } else if (e.code === 'Space') {
         e.preventDefault();
         if (timerPhase === 'idle') {
@@ -349,7 +406,7 @@ export default function App() {
         } else if (timerPhase === 'running') {
           handleStopChrono();
         } else if (timerPhase === 'revealed') {
-          resetCurrentRound();
+          handleNextRoundOrFinishDaily();
         }
       }
     };
@@ -357,6 +414,7 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    handleNextRoundOrFinishDaily,
     handleRestartSession,
     handleSelectMode,
     handleStartChrono,
@@ -370,6 +428,15 @@ export default function App() {
   const sessionSummary = useMemo(() => computeSessionSummary(rounds), [rounds]);
   const stoppedParts = useMemo(() => splitTimerParts(stoppedElapsedMs), [stoppedElapsedMs]);
   const activeModeInfo = MODE_INFO[mode];
+  const chronologicalDailyRounds = useMemo(
+    () => [...rounds].sort((a, b) => a.roundNumber - b.roundNumber),
+    [rounds]
+  );
+
+  const currentDailyRoundIndex = Math.min(
+    DAILY_ROUNDS_TOTAL,
+    rounds.length + (timerPhase === 'revealed' ? 0 : 1)
+  );
 
   return (
     <main className="relative w-screen h-screen overflow-hidden select-none bg-[#0B0F17] text-[#F8FAFC]">
@@ -391,11 +458,11 @@ export default function App() {
 
       {/* PLAYING HUD & INTERACTIVE DECK */}
       {shellState !== 'title' && (
-        <div className="fixed inset-0 z-10 flex flex-col justify-between p-3 md:p-6 pointer-events-none">
+        <div className="fixed inset-0 z-10 flex flex-col justify-between p-2.5 sm:p-4 md:p-6 pointer-events-none">
           {/* TOP PERIMETER HUD - Clean Single-Line Header on Mobile & Desktop */}
           <header className="flex items-center justify-between gap-1 sm:gap-2 w-full max-w-5xl mx-auto">
             {/* Top-Left: Logo & Score */}
-            <div className="flex items-center gap-1.5 sm:gap-2 bg-[#0D131F]/95 border border-slate-800 rounded-xl px-2 py-1 sm:px-2.5 sm:py-1.5 pointer-events-auto shrink-0 shadow-md">
+            <div className="flex items-center gap-1 sm:gap-2 bg-[#0D131F]/95 border border-slate-800 rounded-xl px-1.5 py-1 sm:px-2.5 sm:py-1.5 pointer-events-auto shrink-0 shadow-md">
               <button
                 type="button"
                 onClick={() => setShellState('title')}
@@ -407,10 +474,10 @@ export default function App() {
               </button>
               <div className="flex flex-col leading-none">
                 <span className="text-[8px] sm:text-[9px] font-mono-tabular uppercase tracking-wider text-slate-400">
-                  PUNTI
+                  {mode === 'giornaliera' ? 'OGGI' : 'PUNTI'}
                 </span>
                 <span
-                  className="font-mono-tabular text-xs sm:text-sm font-extrabold text-[#F59E0B]"
+                  className="font-mono-tabular text-[11px] sm:text-sm font-extrabold text-[#F59E0B]"
                   data-testid="hud-score"
                 >
                   {sessionSummary.totalPoints}
@@ -422,20 +489,24 @@ export default function App() {
                   ROUND
                 </span>
                 <span className="font-mono-tabular text-sm font-bold text-white">
-                  #{rounds.length + 1}
+                  {mode === 'giornaliera'
+                    ? `${currentDailyRoundIndex}/${DAILY_ROUNDS_TOTAL}`
+                    : `#${rounds.length + (timerPhase === 'revealed' ? 0 : 1)}`}
                 </span>
               </div>
             </div>
 
-            {/* Top-Center: 3-Mode Segmented Switcher */}
+            {/* Top-Center: 4-Mode Segmented Switcher */}
             <div
-              className="flex items-center gap-0.5 p-0.5 sm:p-1 rounded-xl bg-[#0D131F]/95 border border-slate-800 pointer-events-auto shadow-md shrink-0"
+              className="flex items-center gap-0.5 p-0.5 sm:p-1 rounded-xl bg-[#0D131F]/95 border border-slate-800 pointer-events-auto shadow-md shrink min-w-0"
               role="tablist"
               aria-label="Modalità di gioco"
             >
-              {(['classica', 'sfida', 'buio'] as GameMode[]).map((m) => {
+              {(['classica', 'sfida', 'buio', 'giornaliera'] as GameMode[]).map((m) => {
                 const info = MODE_INFO[m];
                 const isActive = mode === m;
+                const mobileShort =
+                  m === 'giornaliera' ? '5x' : m === 'classica' ? 'Class.' : info.shortTitle;
                 return (
                   <button
                     key={m}
@@ -447,14 +518,15 @@ export default function App() {
                       e.currentTarget.blur();
                       handleSelectMode(m);
                     }}
-                    className={`flex items-center gap-1 px-1.5 sm:px-3 py-1 rounded-lg text-[11px] sm:text-xs font-display font-bold tracking-wide transition-all cursor-pointer whitespace-nowrap ${
+                    className={`flex items-center gap-0.5 sm:gap-1 px-1.5 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-xs font-display font-bold tracking-wide transition-all cursor-pointer whitespace-nowrap ${
                       isActive
                         ? 'bg-[#F59E0B] text-[#0B0F17] shadow-sm'
                         : 'text-slate-300 hover:text-white disabled:opacity-40'
                     }`}
                   >
                     <ModeIconSvg mode={m} active={isActive} />
-                    <span>{info.shortTitle}</span>
+                    <span className="sm:hidden">{mobileShort}</span>
+                    <span className="hidden sm:inline">{info.shortTitle}</span>
                   </button>
                 );
               })}
@@ -498,6 +570,12 @@ export default function App() {
             {mode === 'sfida' && (
               <div className="mt-0.5 font-mono-tabular text-xs md:text-sm font-bold text-[#10B981] hud-stroke">
                 OBIETTIVO: {targetSeconds.toFixed(2)}s
+              </div>
+            )}
+
+            {mode === 'giornaliera' && (
+              <div className="mt-0.5 font-mono-tabular text-[11px] md:text-xs font-bold text-[#A855F7] hud-stroke">
+                ROUND {currentDailyRoundIndex}/{DAILY_ROUNDS_TOTAL} · MAX {DAILY_MAX_ROUND_SCORE} PT
               </div>
             )}
 
@@ -546,7 +624,9 @@ export default function App() {
                 ))}
 
               {timerPhase === 'stopped_awaiting_input' &&
-                (mode === 'buio' || (mode === 'classica' && classicSecretHold) ? (
+                (mode === 'buio' ||
+                mode === 'giornaliera' ||
+                (mode === 'classica' && classicSecretHold) ? (
                   <div className="flex flex-col items-center">
                     <span
                       className="text-4xl sm:text-5xl md:text-6xl text-[#38BDF8] tracking-widest"
@@ -587,18 +667,58 @@ export default function App() {
           {/* BOTTOM PERIMETER INTERACTION DOCK - Mobile First & Super Clean */}
           <div className="w-full max-w-xl mx-auto pointer-events-auto pb-1 sm:pb-3">
             <div className="rounded-2xl sm:rounded-3xl bg-[#0D131F]/95 backdrop-blur-md border border-slate-800 p-3 sm:p-5 shadow-2xl">
+              {/* DAILY 5-ROUND TRACKER PILLS (Visible in Modalità Giornaliera) */}
+              {mode === 'giornaliera' && (
+                <div className="mb-2.5 pb-2 border-b border-slate-800/80">
+                  <div className="flex items-center justify-between text-[11px] font-mono-tabular mb-1.5">
+                    <span className="text-purple-300 font-bold uppercase tracking-wider">
+                      Sfida Giornaliera ({rounds.length}/{DAILY_ROUNDS_TOTAL} completati)
+                    </span>
+                    <span className="text-amber-400 font-extrabold">
+                      {sessionSummary.totalPoints.toLocaleString('it-IT')} /{' '}
+                      {DAILY_MAX_TOTAL_SCORE.toLocaleString('it-IT')} PT
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {Array.from({ length: DAILY_ROUNDS_TOTAL }).map((_, idx) => {
+                      const doneRound = chronologicalDailyRounds[idx];
+                      const isCurrent = idx + 1 === currentDailyRoundIndex && !doneRound;
+                      return (
+                        <div
+                          key={idx}
+                          className={`rounded-lg py-1 px-1 text-center font-mono-tabular text-[10px] border ${
+                            doneRound
+                              ? 'bg-purple-950/60 border-purple-500/60 text-amber-300 font-bold'
+                              : isCurrent
+                              ? 'bg-slate-800/90 border-amber-400 text-white font-bold'
+                              : 'bg-[#0B0F17] border-slate-800 text-slate-500'
+                          }`}
+                        >
+                          {doneRound ? `${doneRound.points}pt` : `R${idx + 1}`}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* PHASE 1: IDLE SETUP & START BUTTON */}
               {timerPhase === 'idle' && (
                 <div className="flex flex-col gap-2.5 sm:gap-3.5">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-slate-300 leading-snug">
-                      {mode === 'classica' && 'Avvia e ferma il cronometro a sorpresa: gli amici indovinano.'}
-                      {mode === 'sfida' && `Gli amici dicono STOP a ${targetSeconds.toFixed(1)}s esatti.`}
-                      {mode === 'buio' && 'Timer invisibile: ferma quando vuoi e indovina quanti secondi sono passati.'}
+                      {mode === 'classica' &&
+                        'Avvia e ferma il cronometro a sorpresa: gli amici indovinano.'}
+                      {mode === 'sfida' &&
+                        `Gli amici dicono STOP a ${targetSeconds.toFixed(1)}s esatti.`}
+                      {mode === 'buio' &&
+                        'Timer invisibile: ferma quando vuoi e indovina quanti secondi sono passati.'}
+                      {mode === 'giornaliera' &&
+                        `Round ${currentDailyRoundIndex} di ${DAILY_ROUNDS_TOTAL}: avvia e ferma al buio, poi indovina il tempo per ottenere da 1 a 5.000 PT!`}
                     </p>
 
                     {/* Optional visibility toggle */}
-                    {mode !== 'buio' && (
+                    {mode !== 'buio' && mode !== 'giornaliera' && (
                       <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer shrink-0">
                         <input
                           type="checkbox"
@@ -704,7 +824,9 @@ export default function App() {
                     }}
                     className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-98 text-[#0B0F17] font-display font-black text-base tracking-wider cursor-pointer whitespace-nowrap shadow-lg shadow-amber-500/20 transition-all"
                   >
-                    AVVIA CRONOMETRO
+                    {mode === 'giornaliera'
+                      ? `AVVIA ROUND ${currentDailyRoundIndex}/${DAILY_ROUNDS_TOTAL} AL BUIO`
+                      : 'AVVIA CRONOMETRO'}
                   </button>
                 </div>
               )}
@@ -717,7 +839,7 @@ export default function App() {
                       'Ferma il cronometro a sorpresa e chiedi agli amici: "Quanto tempo è passato?"'}
                     {mode === 'sfida' &&
                       `I tuoi amici devono dirti STOP esattamente a ${targetSeconds.toFixed(1)} secondi!`}
-                    {mode === 'buio' &&
+                    {(mode === 'buio' || mode === 'giornaliera') &&
                       'Il cronometro scorre al buio! Premi STOP quando decidi tu.'}
                   </p>
                   <button
@@ -733,116 +855,124 @@ export default function App() {
                 </div>
               )}
 
-              {/* PHASE 3A: STOPPED IN MODALITÀ AL BUIO -> GUESS HOW MUCH TIME PASSED */}
-              {timerPhase === 'stopped_awaiting_input' && mode === 'buio' && (
-                <div className="flex flex-col gap-3">
-                  <div className="text-center">
-                    <h3 className="font-display font-bold text-base text-white">
-                      Timer Fermato al Buio!
-                    </h3>
-                    <p className="text-xs text-slate-300 mt-0.5">
-                      Quanti secondi pensi siano trascorsi?
-                    </p>
-                  </div>
-
-                  {/* Clean Stepper */}
-                  <div className="flex items-center justify-center gap-2 py-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const curr = parseSecondsInput(blindGuessInput) ?? 5;
-                        const next = Math.max(0.5, Math.round((curr - 1) * 10) / 10);
-                        setBlindGuessInput(next.toFixed(1));
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
-                    >
-                      -1s
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const curr = parseSecondsInput(blindGuessInput) ?? 5;
-                        const next = Math.max(0.5, Math.round((curr - 0.5) * 10) / 10);
-                        setBlindGuessInput(next.toFixed(1));
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
-                    >
-                      -0.5s
-                    </button>
-
-                    <div className="flex items-center gap-1 px-3 py-1 bg-[#0B0F17] border border-slate-700 rounded-xl">
-                      <input
-                        id="blind-guess-input"
-                        type="number"
-                        step="0.1"
-                        min="0.1"
-                        max="300"
-                        value={blindGuessInput}
-                        aria-label="Secondi stimati"
-                        onChange={(e) => {
-                          setBlindGuessInput(e.target.value);
-                          setBlindInputError(null);
-                        }}
-                        className="w-16 bg-transparent text-center font-mono-tabular text-lg font-black text-[#38BDF8] focus:outline-none"
-                      />
-                      <span className="text-xs text-slate-400 font-mono-tabular">sec</span>
+              {/* PHASE 3A: STOPPED IN MODALITÀ AL BUIO OR GIORNALIERA -> GUESS HOW MUCH TIME PASSED */}
+              {timerPhase === 'stopped_awaiting_input' &&
+                (mode === 'buio' || mode === 'giornaliera') && (
+                  <div className="flex flex-col gap-3">
+                    <div className="text-center">
+                      <h3 className="font-display font-bold text-base text-white">
+                        {mode === 'giornaliera'
+                          ? `Round ${currentDailyRoundIndex}/${DAILY_ROUNDS_TOTAL} Fermato al Buio!`
+                          : 'Timer Fermato al Buio!'}
+                      </h3>
+                      <p className="text-xs text-slate-300 mt-0.5">
+                        {mode === 'giornaliera'
+                          ? 'Indovina quanti secondi sono passati (da 1 a 5.000 punti):'
+                          : 'Quanti secondi pensi siano trascorsi?'}
+                      </p>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const curr = parseSecondsInput(blindGuessInput) ?? 5;
-                        const next = Math.round((curr + 0.5) * 10) / 10;
-                        setBlindGuessInput(next.toFixed(1));
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
-                    >
-                      +0.5s
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const curr = parseSecondsInput(blindGuessInput) ?? 5;
-                        const next = Math.round((curr + 1) * 10) / 10;
-                        setBlindGuessInput(next.toFixed(1));
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
-                    >
-                      +1s
-                    </button>
+                    {/* Clean Stepper */}
+                    <div className="flex items-center justify-center gap-2 py-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const curr = parseSecondsInput(blindGuessInput) ?? 5;
+                          const next = Math.max(0.5, Math.round((curr - 1) * 10) / 10);
+                          setBlindGuessInput(next.toFixed(1));
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
+                      >
+                        -1s
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const curr = parseSecondsInput(blindGuessInput) ?? 5;
+                          const next = Math.max(0.5, Math.round((curr - 0.5) * 10) / 10);
+                          setBlindGuessInput(next.toFixed(1));
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
+                      >
+                        -0.5s
+                      </button>
+
+                      <div className="flex items-center gap-1 px-3 py-1 bg-[#0B0F17] border border-slate-700 rounded-xl">
+                        <input
+                          id="blind-guess-input"
+                          type="number"
+                          step="0.1"
+                          min="0.1"
+                          max="300"
+                          value={blindGuessInput}
+                          aria-label="Secondi stimati"
+                          onChange={(e) => {
+                            setBlindGuessInput(e.target.value);
+                            setBlindInputError(null);
+                          }}
+                          className="w-16 bg-transparent text-center font-mono-tabular text-lg font-black text-[#38BDF8] focus:outline-none"
+                        />
+                        <span className="text-xs text-slate-400 font-mono-tabular">sec</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const curr = parseSecondsInput(blindGuessInput) ?? 5;
+                          const next = Math.round((curr + 0.5) * 10) / 10;
+                          setBlindGuessInput(next.toFixed(1));
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
+                      >
+                        +0.5s
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const curr = parseSecondsInput(blindGuessInput) ?? 5;
+                          const next = Math.round((curr + 1) * 10) / 10;
+                          setBlindGuessInput(next.toFixed(1));
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono-tabular text-slate-200 cursor-pointer"
+                      >
+                        +1s
+                      </button>
+                    </div>
+
+                    {blindInputError && (
+                      <p className="text-xs text-rose-400 text-center font-medium" role="alert">
+                        {blindInputError}
+                      </p>
+                    )}
+
+                    <div className="flex flex-col gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleRevealBlindGuess(false)}
+                        className="w-full py-3 px-6 rounded-xl bg-gradient-to-r from-sky-400 to-sky-500 hover:from-sky-300 hover:to-sky-400 active:scale-98 text-[#0B0F17] font-display font-black text-sm tracking-wider cursor-pointer whitespace-nowrap shadow-lg shadow-sky-500/20"
+                      >
+                        {mode === 'giornaliera'
+                          ? 'CONFERMA STIMA E CALCOLA (1–5000 PT)'
+                          : 'RIVELA IL TEMPO SEGRETO'}
+                      </button>
+
+                      {mode === 'buio' && (
+                        <button
+                          type="button"
+                          onClick={() => handleRevealBlindGuess(true)}
+                          className="text-center text-xs text-slate-400 hover:text-slate-200 py-1 cursor-pointer"
+                        >
+                          Rivela subito senza stima
+                        </button>
+                      )}
+                    </div>
                   </div>
-
-                  {blindInputError && (
-                    <p className="text-xs text-rose-400 text-center font-medium" role="alert">
-                      {blindInputError}
-                    </p>
-                  )}
-
-                  <div className="flex flex-col gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleRevealBlindGuess(false)}
-                      className="w-full py-3 px-6 rounded-xl bg-gradient-to-r from-sky-400 to-sky-500 hover:from-sky-300 hover:to-sky-400 active:scale-98 text-[#0B0F17] font-display font-black text-sm tracking-wider cursor-pointer whitespace-nowrap shadow-lg shadow-sky-500/20"
-                    >
-                      RIVELA IL TEMPO SEGRETO
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleRevealBlindGuess(true)}
-                      className="text-center text-xs text-slate-400 hover:text-slate-200 py-1 cursor-pointer"
-                    >
-                      Rivela subito senza stima
-                    </button>
-                  </div>
-                </div>
-              )}
+                )}
 
               {/* PHASE 3B: STOPPED IN MODALITÀ CLASSICA */}
               {timerPhase === 'stopped_awaiting_input' && mode === 'classica' && (
                 <div className="flex flex-col gap-3">
                   {!showClassicFriendsInputs ? (
-                    // Default Clean Flow: Reveal time directly or optionally enter friend scores
                     <div className="flex flex-col gap-2.5 text-center">
                       <h3 className="font-display font-bold text-base text-white">
                         Cronometro Fermato!
@@ -870,7 +1000,6 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    // Detailed Friend Input Form
                     <div className="flex flex-col gap-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-white">Stime dei giocatori:</span>
@@ -984,13 +1113,14 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <div>
                       <span className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#10B981] font-bold">
-                        {lastEvaluation.gradeLabel} · +{lastEvaluation.totalPoints} PT
+                        {lastEvaluation.gradeLabel} · +{lastEvaluation.totalPoints.toLocaleString('it-IT')}
+                        {mode === 'giornaliera' ? ` / ${DAILY_MAX_ROUND_SCORE} PT` : ' PT'}
                       </span>
                       <h3 className="font-display font-bold text-sm sm:text-base text-white">
                         {lastEvaluation.gradeSubtitle}
                       </h3>
                     </div>
-                    {streak > 1 && (
+                    {streak > 1 && mode !== 'giornaliera' && (
                       <span className="px-2 py-0.5 rounded-full bg-amber-400/20 text-[#F59E0B] text-xs font-mono-tabular font-bold border border-amber-400/30">
                         🔥 {streak}x Streak
                       </span>
@@ -1016,7 +1146,7 @@ export default function App() {
                     <div className="flex flex-col">
                       <span className="text-[10px] text-slate-400 uppercase tracking-wider">Scarto</span>
                       <strong className="text-sm sm:text-base text-[#38BDF8] font-extrabold">
-                        {formatSignedDelta(lastEvaluation.signedDeltaMs)}
+                        {formatSignedDelta(lastEvaluation.signedDeltaMs)} ({lastEvaluation.absErrorMs}ms)
                       </strong>
                     </div>
                   </div>
@@ -1034,7 +1164,8 @@ export default function App() {
                           }`}
                         >
                           <span className="font-sans font-semibold">
-                            {rf.isWinner ? '👑 ' : ''}{rf.rank}° {rf.playerName}
+                            {rf.isWinner ? '👑 ' : ''}
+                            {rf.rank}° {rf.playerName}
                           </span>
                           <span>
                             {rf.guessSeconds.toFixed(2)}s ({rf.absErrorMs}ms)
@@ -1049,22 +1180,28 @@ export default function App() {
                       type="button"
                       onClick={(e) => {
                         e.currentTarget.blur();
-                        resetCurrentRound();
+                        handleNextRoundOrFinishDaily();
                       }}
-                      className="flex-1 py-3 px-5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-98 text-[#0B0F17] font-display font-black text-sm tracking-wider cursor-pointer whitespace-nowrap shadow-lg shadow-amber-500/20"
+                      className="flex-1 py-3 px-4 sm:px-5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-98 text-[#0B0F17] font-display font-black text-xs sm:text-sm tracking-wider cursor-pointer whitespace-nowrap shadow-lg shadow-amber-500/20"
                     >
-                      PROSSIMO ROUND
+                      {mode === 'giornaliera'
+                        ? rounds.length >= DAILY_ROUNDS_TOTAL
+                          ? 'VEDI RIEPILOGO GIORNALIERO (5/5)'
+                          : `PROSSIMO ROUND (${rounds.length + 1}/${DAILY_ROUNDS_TOTAL})`
+                        : 'PROSSIMO ROUND'}
                     </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.currentTarget.blur();
-                        setShellState('gameover');
-                      }}
-                      className="py-3 px-3.5 rounded-xl border border-slate-700 hover:border-slate-500 text-xs font-medium text-slate-300 cursor-pointer whitespace-nowrap"
-                    >
-                      Riepilogo
-                    </button>
+                    {!(mode === 'giornaliera' && rounds.length >= DAILY_ROUNDS_TOTAL) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.currentTarget.blur();
+                          setShellState('gameover');
+                        }}
+                        className="py-3 px-3.5 rounded-xl border border-slate-700 hover:border-slate-500 text-xs font-medium text-slate-300 cursor-pointer whitespace-nowrap"
+                      >
+                        Riepilogo
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1090,6 +1227,8 @@ export default function App() {
         <GameOverModal
           summary={sessionSummary}
           rounds={rounds}
+          activeMode={mode}
+          dailyBestScore={dailyBestScore}
           onPlayAgain={handleRestartSession}
           onReturnTitle={() => {
             resetCurrentRound();

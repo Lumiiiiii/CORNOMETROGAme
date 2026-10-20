@@ -69,7 +69,13 @@ export const TitleEmblemSvg: React.FC = () => (
 export const ModeIconSvg: React.FC<{ mode: GameMode; active?: boolean }> = ({ mode, active }) => {
   const strokeColor = active ? '#0B0F17' : '#E2E8F0';
   const accentFill =
-    mode === 'classica' ? '#F59E0B' : mode === 'sfida' ? '#10B981' : '#38BDF8';
+    mode === 'classica'
+      ? '#F59E0B'
+      : mode === 'sfida'
+      ? '#10B981'
+      : mode === 'giornaliera'
+      ? '#A855F7'
+      : '#38BDF8';
 
   if (mode === 'classica') {
     return (
@@ -87,6 +93,20 @@ export const ModeIconSvg: React.FC<{ mode: GameMode; active?: boolean }> = ({ mo
         <circle cx="12" cy="12" r="9" fill="#0F172A" stroke={strokeColor} strokeWidth="2" />
         <circle cx="12" cy="12" r="5" fill="none" stroke={accentFill} strokeWidth="1.8" />
         <circle cx="12" cy="12" r="2" fill={accentFill} />
+      </svg>
+    );
+  }
+
+  if (mode === 'giornaliera') {
+    return (
+      <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="16" rx="2.5" fill="#0F172A" stroke={strokeColor} strokeWidth="2" />
+        <line x1="8" y1="3" x2="8" y2="7" stroke={accentFill} strokeWidth="2" strokeLinecap="round" />
+        <line x1="16" y1="3" x2="16" y2="7" stroke={accentFill} strokeWidth="2" strokeLinecap="round" />
+        <path
+          d="M12 10 L13.2 12.6 L16 13 L14 14.9 L14.5 17.6 L12 16.3 L9.5 17.6 L10 14.9 L8 13 L10.8 12.6 Z"
+          fill={accentFill}
+        />
       </svg>
     );
   }

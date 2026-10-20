@@ -14,7 +14,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onSelectMode,
   onStartGame,
 }) => {
-  const modes: GameMode[] = ['classica', 'sfida', 'buio'];
+  const modes: GameMode[] = ['classica', 'sfida', 'buio', 'giornaliera'];
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col justify-between px-4 py-3 sm:py-6 md:px-8 pointer-events-none overflow-y-auto">
@@ -31,7 +31,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           Il Gioco del Tempo
         </p>
         <p className="mt-1 text-xs text-slate-300 max-w-xs sm:max-w-sm font-normal">
-          Tre modalità party per mettere alla prova la tua percezione dei secondi.
+          Sfide party e Sfida Giornaliera Cieca (5 round · 1–5000 PT).
         </p>
       </div>
 
@@ -39,10 +39,10 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       <div className="my-auto min-h-4 sm:min-h-8" aria-hidden="true" />
 
       {/* Bottom region: Clean Mode selector + Primary Start CTA */}
-      <div className="flex flex-col items-center w-full max-w-xl mx-auto gap-2.5 sm:gap-3 pointer-events-auto pb-2 sm:pb-4">
-        {/* 3 Game Modes selector cards */}
+      <div className="flex flex-col items-center w-full max-w-2xl mx-auto gap-2.5 sm:gap-3 pointer-events-auto pb-2 sm:pb-4">
+        {/* 4 Game Modes selector cards (2x2 on mobile, 4 cols on desktop) */}
         <div
-          className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full"
+          className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full"
           role="radiogroup"
           aria-label="Seleziona modalità di gioco"
         >
@@ -65,13 +65,13 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                     : 'bg-[#0D131F]/90 border-slate-800 text-slate-300 hover:border-slate-700'
                 }`}
               >
-                <div className="flex items-center justify-between gap-1.5">
-                  <span className="font-display font-bold text-xs sm:text-sm tracking-wide text-white whitespace-nowrap">
-                    {info.title}
+                <div className="flex items-center justify-between gap-1">
+                  <span className="font-display font-bold text-xs sm:text-sm tracking-wide text-white truncate">
+                    {info.shortTitle}
                   </span>
                   <ModeIconSvg mode={m} active={isSelected} />
                 </div>
-                <p className="mt-0.5 text-[11px] text-slate-400 leading-tight">
+                <p className="mt-0.5 text-[10px] sm:text-[11px] text-slate-400 leading-tight line-clamp-2">
                   {info.kicker}
                 </p>
               </button>
@@ -94,7 +94,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
         {/* Desktop keyboard hint vs Mobile hint */}
         <p className="hidden sm:block text-[11px] text-slate-400 font-mono-tabular tracking-wide text-center">
-          Spazio Avvia / Stop · 1/2/3 Modalità · P Pausa · M Audio
+          Spazio Avvia / Stop · 1/2/3/4 Modalità · P Pausa · M Audio
         </p>
         <p className="sm:hidden text-[10px] text-slate-400 font-mono-tabular tracking-wide text-center">
           Tocca una modalità e premi Inizia

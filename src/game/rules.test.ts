@@ -8,13 +8,31 @@ import {
   evaluateAttempt,
   evaluateClassicGuesses,
   computeSessionSummary,
+  calculateDailyRoundScore,
+  DAILY_MIN_ROUND_SCORE,
+  DAILY_MAX_ROUND_SCORE,
 } from './rules.ts';
 
-test('isTimerHiddenDuringRun hides timer automatically in Modalità Al Buio', () => {
+test('isTimerHiddenDuringRun hides timer automatically in Modalità Al Buio and Giornaliera', () => {
   assert.equal(isTimerHiddenDuringRun('buio', false), true);
+  assert.equal(isTimerHiddenDuringRun('giornaliera', false), true);
   assert.equal(isTimerHiddenDuringRun('classica', false), false);
   assert.equal(isTimerHiddenDuringRun('sfida', false), false);
   assert.equal(isTimerHiddenDuringRun('sfida', true), true);
+});
+
+test('calculateDailyRoundScore awards between 1 and 5000 points per round', () => {
+  assert.equal(calculateDailyRoundScore(0), 5000);
+  assert.equal(calculateDailyRoundScore(10), 5000);
+  const nearScore = calculateDailyRoundScore(120);
+  const midScore = calculateDailyRoundScore(600);
+  const farScore = calculateDailyRoundScore(3000);
+  const extremeScore = calculateDailyRoundScore(50000);
+
+  assert.ok(nearScore > midScore);
+  assert.ok(midScore > farScore);
+  assert.ok(nearScore <= DAILY_MAX_ROUND_SCORE);
+  assert.equal(extremeScore, DAILY_MIN_ROUND_SCORE);
 });
 
 test('splitTimerParts and formatSeconds format milliseconds accurately', () => {
@@ -33,7 +51,7 @@ test('parseSecondsInput validates and normalizes Italian comma or dot decimals',
   assert.equal(parseSecondsInput('abc'), null);
 });
 
-test('evaluateAttempt grades precision and calculates streak bonuses', () => {
+test('evaluateAttempt grades precision and calculates streak bonuses or daily 1-5000 score', () => {
   const perfect = evaluateAttempt(5030, 5000, 0);
   assert.equal(perfect.grade, 'PERFETTO');
   assert.equal(perfect.absErrorMs, 30);
@@ -45,6 +63,9 @@ test('evaluateAttempt grades precision and calculates streak bonuses', () => {
   assert.equal(sniperWithStreak.absErrorMs, 150);
   assert.equal(sniperWithStreak.totalPoints, 750 + 200);
   assert.equal(sniperWithStreak.nextStreak, 3);
+
+  const dailyAttempt = evaluateAttempt(5010, 5000, 0, true);
+  assert.equal(dailyAttempt.totalPoints, 5000);
 
   const offTarget = evaluateAttempt(8500, 5000, 3);
   assert.equal(offTarget.grade, 'FUORI_TEMPO');
@@ -97,6 +118,7 @@ test('computeSessionSummary aggregates round metrics accurately', () => {
   assert.equal(summary.roundsPlayed, 2);
   assert.equal(summary.totalPoints, 1850);
   assert.equal(summary.bestErrorMs, 20);
+  assert.equal(summary.avgErrorMs, 100);
   assert.equal(summary.perfectCount, 2);
   assert.equal(summary.rankTitle, 'Maestro Orologiaio Svizzero');
 });
