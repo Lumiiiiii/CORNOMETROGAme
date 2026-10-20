@@ -1,0 +1,6 @@
+{
+  "name": "CronoSfida — Il Gioco del Tempo",
+  "description": "Minigioco party di percezione del tempo con tre modalità: Classica, Sfida al Bersaglio e Al Buio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
